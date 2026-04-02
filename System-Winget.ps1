@@ -3,13 +3,13 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
-    [string]$SoftwareName,
+    [string[]]$SoftwareName,
 
     [Parameter(Mandatory = $false)]
-    [string]$Version,
+    [string[]]$Version,
 
     [Parameter(Mandatory = $false)]
-    [string]$ForceVersion
+    [bool[]]$ForceVersion
 )
 
 Set-StrictMode -Version Latest
