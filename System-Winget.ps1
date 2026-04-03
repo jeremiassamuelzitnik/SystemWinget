@@ -6,17 +6,17 @@ param(
     [string[]]$SoftwareName,
 
     [Parameter(Mandatory = $false)]
-    [string[]]$Version,
+    [string[]]$Version = ",",
 
     [Parameter(Mandatory = $false)]
-    [bool[]]$ForceVersion
+    [string]$ForceVersion = ""
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ─────────────────────────────────────────────
-# Parseo múltiple (NUEVO)
+# Parseo múltiple
 # ─────────────────────────────────────────────
 $SoftwareList = $SoftwareName.Split(',') | ForEach-Object { $_.Trim() }
 
@@ -24,17 +24,10 @@ $VersionList = if ($Version) {
     $Version.Split(',') | ForEach-Object { $_.Trim() }
 } else { @() }
 
-$ForceList = @()
-
-if ($PSBoundParameters.ContainsKey('ForceVersion')) {
-    if ([string]::IsNullOrWhiteSpace($ForceVersion)) {
-        $ForceList = @($true) * $SoftwareList.Count
-    }
-    else {
-        $ForceList = $ForceVersion.Split(',') | ForEach-Object {
-            $_.Trim() -match '^(1|true)$'
-        }
-    }
+$ForceList = if ([string]::IsNullOrWhiteSpace($ForceVersion)) {
+    @($false) * $SoftwareList.Count
+} else {
+    $ForceVersion.Split(',') | ForEach-Object { $_.Trim() -match '^(1|true)$' }
 }
 
 # ─────────────────────────────────────────────
@@ -101,26 +94,26 @@ else {
 }
 
 # ─────────────────────────────────────────────
-# LOOP PRINCIPAL (NUEVO)
+# LOOP PRINCIPAL
 # ─────────────────────────────────────────────
 for ($i = 0; $i -lt $SoftwareList.Count; $i++) {
 
-    $SoftwareName = $SoftwareList[$i]
+    $CurrentSoftware = $SoftwareList[$i]
 
-    $Version = if ($i -lt $VersionList.Count -and $VersionList[$i]) {
+    $CurrentVersion = if ($i -lt $VersionList.Count -and $VersionList[$i]) {
         $VersionList[$i]
     } else { $null }
 
-    $ForceVersion = if ($i -lt $ForceList.Count) {
+    $CurrentForce = if ($i -lt $ForceList.Count) {
         $ForceList[$i]
     } else { $false }
 
-    Write-Step "Buscando '$SoftwareName'..."
+    Write-Step "Buscando '$CurrentSoftware'..."
 
-    $results = @(Find-WinGetPackage -Query $SoftwareName)
+    $results = @(Find-WinGetPackage -Query $CurrentSoftware)
 
     if (-not $results) {
-        Write-Fail "Sin resultados."
+        Write-Fail "Sin resultados para '$CurrentSoftware'."
         continue
     }
 
@@ -142,7 +135,7 @@ for ($i = 0; $i -lt $SoftwareList.Count; $i++) {
     }
 
     # ─────────────────────────────────────────────
-    # SELECCIÓN ORIGINAL (SIN TOCAR)
+    # Selección de paquete
     # ─────────────────────────────────────────────
     $chosen = $null
 
@@ -213,41 +206,41 @@ for ($i = 0; $i -lt $SoftwareList.Count; $i++) {
             Write-Ok "Elegido: $($chosen.Name)"
         }
         else {
-            $chosen = Get-BestNonStoreMatch $results $SoftwareName
+            $chosen = Get-BestNonStoreMatch $results $CurrentSoftware
             if (-not $chosen) { $chosen = $results[0] }
             Write-Ok "Auto-selección: $($chosen.Name)"
         }
     }
 
     # ─────────────────────────────────────────────
-    # INSTALACIÓN (SIN CAMBIOS)
+    # Instalación / actualización
     # ─────────────────────────────────────────────
-    Write-Step "Verificando instalación..."
+    Write-Step "Verificando instalación de '$($chosen.Name)'..."
 
     $installed = Get-WinGetPackage -Id $chosen.Id -ErrorAction SilentlyContinue
 
     if ($installed) {
         Write-Ok "Instalado: $($installed.InstalledVersion)"
 
-        if ($Version) {
+        if ($CurrentVersion) {
 
-            Write-Step "Modo versión específica: $Version"
+            Write-Step "Modo versión específica: $CurrentVersion"
 
-            $cmp = Compare-Version $installed.InstalledVersion $Version
+            $cmp = Compare-Version $installed.InstalledVersion $CurrentVersion
 
             if ($cmp -eq 0) {
                 Write-Ok "Ya está en la versión objetivo."
             }
             elseif ($cmp -lt 0) {
-                Install-WinGetPackage -Id $chosen.Id -Version $Version -Mode Silent -Force
-                Write-Ok "Actualizado a $Version"
+                Install-WinGetPackage -Id $chosen.Id -Version $CurrentVersion -Mode Silent -Force
+                Write-Ok "Actualizado a $CurrentVersion"
             }
             elseif ($cmp -gt 0) {
-                if ($ForceVersion) {
+                if ($CurrentForce) {
                     Write-Warn "Downgrade forzado"
 
                     Uninstall-WinGetPackage -Id $chosen.Id -Force
-                    Install-WinGetPackage -Id $chosen.Id -Version $Version -Mode Silent -Force
+                    Install-WinGetPackage -Id $chosen.Id -Version $CurrentVersion -Mode Silent -Force
 
                     Write-Ok "Downgrade completado."
                 }
@@ -272,10 +265,10 @@ for ($i = 0; $i -lt $SoftwareList.Count; $i++) {
         }
     }
     else {
-        Write-Step "Instalando..."
+        Write-Step "Instalando '$($chosen.Name)'..."
 
-        if ($Version) {
-            Install-WinGetPackage -Id $chosen.Id -Version $Version -Mode Silent -Force
+        if ($CurrentVersion) {
+            Install-WinGetPackage -Id $chosen.Id -Version $CurrentVersion -Mode Silent -Force
         }
         else {
             Install-WinGetPackage -Id $chosen.Id -Mode Silent -Force
