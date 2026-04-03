@@ -31,7 +31,6 @@ function Write-Fail { param([string]$Msg) Write-Host "[-] $Msg"  -ForegroundColo
 $SoftwareList = @($SoftwareName -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $count        = @($SoftwareList).Count
 
-# Version: debe tener 0 entradas (latest para todo) o exactamente $count entradas
 $VersionList = if ($Version.Trim()) {
     @($Version -split ',' | ForEach-Object { $_.Trim() })
 } else { @() }
@@ -41,7 +40,6 @@ if (@($VersionList).Count -ne 0 -and @($VersionList).Count -ne $count) {
     exit 1
 }
 
-# ForceVersion: un único valor se aplica a todos; array → debe tener $count entradas
 function Resolve-BoolParam {
     param([string]$Raw, [int]$Count, [string]$ParamName)
 
@@ -109,7 +107,6 @@ function Test-ConsoleAvailable {
     try { $null = [Console]::KeyAvailable; return $true } catch { return $false }
 }
 
-# Auto-selección: exacto primero, luego primer non-store, luego primero de la lista
 function Get-AutoChoice {
     param([array]$Packages, [string]$Query)
     $nonStore = @($Packages | Where-Object { -not (Test-IsMsStore $_) })
@@ -118,7 +115,6 @@ function Get-AutoChoice {
     if (@($exact).Count -gt 0) { return $exact[0] } else { return $pool[0] }
 }
 
-# Selección de paquete con timeout interactivo
 function Select-Package {
     param([array]$Packages, [string]$Query)
 
@@ -180,26 +176,84 @@ function Select-Package {
 }
 
 # ─────────────────────────────────────────────
-# LOOP PRINCIPAL
+# FASE 1 — BÚSQUEDA Y SELECCIÓN DE TODOS LOS PAQUETES
 # ─────────────────────────────────────────────
+Write-Host ""
+Write-Host "════════════════════════════════════════" -ForegroundColor Magenta
+Write-Host "  FASE 1 — Búsqueda y selección"         -ForegroundColor Magenta
+Write-Host "════════════════════════════════════════" -ForegroundColor Magenta
+
+# Cada entrada del plan: @{ Chosen; TargetVer; ForceDown; DoUninstall; Skip }
+$plan = [System.Collections.Generic.List[hashtable]]::new()
+
 for ($i = 0; $i -lt $count; $i++) {
 
-    $sw           = $SoftwareList[$i]
-    $targetVer    = if (@($VersionList).Count -eq $count) { $VersionList[$i] } else { "" }
-    $forceDown    = $ForceList[$i]
-    $doUninstall  = $UninstallList[$i]
+    $sw          = $SoftwareList[$i]
+    $targetVer   = if (@($VersionList).Count -eq $count) { $VersionList[$i] } else { "" }
+    $forceDown   = $ForceList[$i]
+    $doUninstall = $UninstallList[$i]
 
-    Write-Step "[$($i+1)/$count] Procesando: '$sw'"
+    Write-Step "[$($i+1)/$count] Buscando: '$sw'"
 
-    # ── Búsqueda ──────────────────────────────
     $results = @(Find-WinGetPackage -Query $sw)
 
     if (@($results).Count -eq 0) {
-        Write-Fail "Sin resultados para '$sw'. Se omite."
+        Write-Fail "Sin resultados para '$sw'. Se omitirá en la instalación."
+        $plan.Add(@{ Skip = $true; Name = $sw })
         continue
     }
 
     $chosen = Select-Package -Packages $results -Query $sw
+
+    $plan.Add(@{
+        Skip        = $false
+        Chosen      = $chosen
+        TargetVer   = $targetVer
+        ForceDown   = $forceDown
+        DoUninstall = $doUninstall
+    })
+}
+
+# ─── Resumen antes de ejecutar ────────────────
+Write-Host ""
+Write-Host "════════════════════════════════════════" -ForegroundColor Magenta
+Write-Host "  RESUMEN — Paquetes a procesar"         -ForegroundColor Magenta
+Write-Host "════════════════════════════════════════" -ForegroundColor Magenta
+
+foreach ($entry in $plan) {
+    if ($entry.Skip) {
+        Write-Warn "  [OMITIR]      $($entry.Name)"
+    } elseif ($entry.DoUninstall) {
+        Write-Host "  [DESINSTALAR] $($entry.Chosen.Name)  ($($entry.Chosen.Id))" -ForegroundColor Red
+    } else {
+        $verLabel = if ($entry.TargetVer) { "v$($entry.TargetVer)" } else { "latest" }
+        Write-Ok   "  [INSTALAR]    $($entry.Chosen.Name)  ($($entry.Chosen.Id))  →  $verLabel"
+    }
+}
+
+# ─────────────────────────────────────────────
+# FASE 2 — EJECUCIÓN
+# ─────────────────────────────────────────────
+Write-Host ""
+Write-Host "════════════════════════════════════════" -ForegroundColor Magenta
+Write-Host "  FASE 2 — Instalación / desinstalación" -ForegroundColor Magenta
+Write-Host "════════════════════════════════════════" -ForegroundColor Magenta
+
+$idx = 0
+foreach ($entry in $plan) {
+    $idx++
+
+    if ($entry.Skip) {
+        Write-Warn "[$idx/$($plan.Count)] Omitiendo '$($entry.Name)'."
+        continue
+    }
+
+    $chosen      = $entry.Chosen
+    $targetVer   = $entry.TargetVer
+    $forceDown   = $entry.ForceDown
+    $doUninstall = $entry.DoUninstall
+
+    Write-Step "[$idx/$($plan.Count)] Procesando: '$($chosen.Name)'"
 
     # ── Desinstalación ────────────────────────
     if ($doUninstall) {
@@ -221,7 +275,6 @@ for ($i = 0; $i -lt $count; $i++) {
         Write-Ok "Versión instalada: $($installed.InstalledVersion)"
 
         if ($targetVer) {
-            # ── Modo versión específica ──
             $cmp = Compare-Version $installed.InstalledVersion $targetVer
 
             switch ($cmp) {
@@ -245,7 +298,6 @@ for ($i = 0; $i -lt $count; $i++) {
                 }
             }
         } else {
-            # ── Modo latest ──
             $available = Find-WinGetPackage -Id $chosen.Id | Select-Object -First 1
             if ($available -and $available.Version -ne $installed.InstalledVersion) {
                 Write-Step "Actualizando a latest ($($available.Version))..."
